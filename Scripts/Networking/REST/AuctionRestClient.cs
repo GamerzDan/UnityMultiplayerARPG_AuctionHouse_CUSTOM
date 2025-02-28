@@ -10,11 +10,12 @@ namespace MultiplayerARPG.Auction
         public string appSecret;
 
         #region Client APIs
-        public Task<Result<AuctionListResponse>> GetAuctionList(int limit = 20, int page = 1)
+        public Task<Result<AuctionListResponse>> GetAuctionList(int limit = 20, int page = 1, string search = "")
         {
             Dictionary<string, object> queries = new Dictionary<string, object>();
             queries[nameof(limit)] = limit;
             queries[nameof(page)] = page;
+            queries[nameof(search)] = search;
             return Get<AuctionListResponse>(GetUrl(apiUrl, "/"), queries);
         }
 
