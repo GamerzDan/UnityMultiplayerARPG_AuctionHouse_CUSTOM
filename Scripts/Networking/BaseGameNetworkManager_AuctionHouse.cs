@@ -1,8 +1,7 @@
 ﻿using Cysharp.Threading.Tasks;
 using LiteNetLibManager;
 using MultiplayerARPG.Auction;
-using MultiplayerARPG.MMO;
-using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityRestClient;
 
@@ -10,13 +9,14 @@ namespace MultiplayerARPG
 {
     public partial class BaseGameNetworkManager
     {
-        [Serializable]
+        [System.Serializable]
         public struct AuctionHouseMessageTypes
         {
             public ushort createAuctionRequestType;
             public ushort bidRequestType;
             public ushort buyoutRequestType;
             public ushort cancelAuctionRequestType;
+            public ushort getClientConfigRequestType;
         }
 
         /*
@@ -29,6 +29,7 @@ namespace MultiplayerARPG
             bidRequestType = 1301,
             buyoutRequestType = 1302,
             cancelAuctionRequestType = 1304,
+            getClientConfigRequestType = 1303,
         };
         public string auctionHouseServiceUrl = "http://localhost:9800";
         public string auctionHouseServiceUrlForClient = "http://localhost:9800";
@@ -55,31 +56,6 @@ namespace MultiplayerARPG
             }
         }
 
-        public void ReadAuctionHouseServerConfig()
-        {
-            ServerConfig serverConfig = ConfigManager.ReadServerConfig();
-            if (!string.IsNullOrEmpty(serverConfig.auctionHouseServiceUrl))
-                auctionHouseServiceUrl = serverConfig.auctionHouseServiceUrl;
-            if (!string.IsNullOrEmpty(serverConfig.auctionHouseSecretKey))
-                auctionHouseSecretKey = serverConfig.auctionHouseSecretKey;
-
-            // Read configs from ENV
-            string envVal;
-            envVal = Environment.GetEnvironmentVariable("auctionHouseServiceUrl");
-            if (!string.IsNullOrEmpty(envVal))
-                auctionHouseServiceUrl = envVal;
-            envVal = Environment.GetEnvironmentVariable("auctionHouseSecretKey");
-            if (!string.IsNullOrEmpty(envVal))
-                auctionHouseSecretKey = envVal;
-        }
-
-        public void ReadAuctionHouseClientConfig()
-        {
-            ClientConfig clientConfig = ConfigManager.ReadClientConfig();
-            if (!string.IsNullOrEmpty(clientConfig.auctionHouseServiceUrl))
-                auctionHouseServiceUrlForClient = clientConfig.auctionHouseServiceUrl;
-        }
-
         [DevExtMethods("RegisterMessages")]
         protected void RegisterMessages_AuctionHouse()
         {
@@ -87,21 +63,14 @@ namespace MultiplayerARPG
             RegisterRequestToServer<BidMessage, ResponseBidMessage>(auctionHouseMessageTypes.bidRequestType, HandleBidAtServer);
             RegisterRequestToServer<BuyoutMessage, ResponseBuyoutMessage>(auctionHouseMessageTypes.buyoutRequestType, HandleBuyoutAtServer);
             RegisterRequestToServer<CancelAuctionMessage, ResponseCancelAuctionMessage>(auctionHouseMessageTypes.cancelAuctionRequestType, HandleCancelAuctionAtServer);
+            RegisterRequestToServer<EmptyMessage, ResponseClientConfigMessage>(auctionHouseMessageTypes.getClientConfigRequestType, HandleGetAuctionClientConfigAtServer);
         }
 
         [DevExtMethods("OnStartServer")]
         protected void OnStartServer_AuctionHouse()
         {
-            ReadAuctionHouseServerConfig();
             AuctionRestClientForServer.apiUrl = auctionHouseServiceUrl;
-            AuctionRestClientForServer.appSecret = auctionHouseSecretKey;
-        }
-
-        [DevExtMethods("OnStartClient")]
-        protected void OnStartClient_AuctionHouse(LiteNetLibClient client)
-        {
-            ReadAuctionHouseClientConfig();
-            AuctionRestClientForClient.apiUrl = auctionHouseServiceUrlForClient;
+            AuctionRestClientForServer.secretKey = auctionHouseSecretKey;
         }
 
         public void CreateAuction(CreateAuctionMessage createAuction, ResponseDelegate<ResponseCreateAuctionMessage> callback)
@@ -409,6 +378,54 @@ namespace MultiplayerARPG
                 return;
             }
             result.InvokeSuccess(new ResponseCancelAuctionMessage());
+        }
+
+        public async UniTask<AsyncResponseData<ResponseClientConfigMessage>> GetAuctionClientConfig()
+        {
+            AsyncResponseData<ResponseClientConfigMessage> result = await ClientSendRequestAsync<EmptyMessage, ResponseClientConfigMessage>(auctionHouseMessageTypes.getClientConfigRequestType, EmptyMessage.Value);
+            switch (result.ResponseCode)
+            {
+                case AckResponseCode.Success:
+                    AuctionRestClientForClient.apiUrl = result.Response.serviceUrl;
+                    AuctionRestClientForClient.secretKey = result.Response.accessToken;
+                    break;
+                case AckResponseCode.Error:
+                    Logging.LogError(LogTag, $"Error occuring when retrieving client connection data from server, code: {result.Response.message}");
+                    ClientGenericActions.ClientReceiveGameMessage(result.Response.message);
+                    break;
+                default:
+                    Logging.LogError(LogTag, $"Cannot retrieving client connection data from server, response code: {result.ResponseCode}");
+                    break;
+            }
+            return result;
+        }
+
+        private async UniTaskVoid HandleGetAuctionClientConfigAtServer(RequestHandlerData requestHandler, EmptyMessage request,
+            RequestProceedResultDelegate<ResponseClientConfigMessage> result)
+        {
+            if (!ServerUserHandlers.TryGetPlayerCharacter(requestHandler.ConnectionId, out IPlayerCharacterData playerCharacter))
+            {
+                // Do nothing, player character is not enter the game yet.
+                result.InvokeError(new ResponseClientConfigMessage()
+                {
+                    message = UITextKeys.UI_ERROR_NOT_LOGGED_IN,
+                });
+                return;
+            }
+            RestClient.Result<Dictionary<string, string>> getAccessTokenResult = await AuctionRestClientForServer.GetAccessToken(playerCharacter.UserId);
+            if (getAccessTokenResult.IsNetworkError || getAccessTokenResult.IsHttpError)
+            {
+                result.InvokeError(new ResponseClientConfigMessage()
+                {
+                    message = UITextKeys.UI_ERROR_INTERNAL_SERVER_ERROR,
+                });
+                return;
+            }
+            result.InvokeSuccess(new ResponseClientConfigMessage()
+            {
+                serviceUrl = auctionHouseServiceUrlForClient,
+                accessToken = getAccessTokenResult.Content["accessToken"]
+            });
         }
     }
 }

@@ -65,7 +65,7 @@ namespace MultiplayerARPG.Auction
             {
                 if (_cacheSelectionManager == null)
                     _cacheSelectionManager = gameObject.GetOrAddComponent<UIAuctionSelectionManager>();
-                _cacheSelectionManager.selectionMode = UISelectionMode.Toggle;
+                _cacheSelectionManager.selectionMode = UISelectionMode.SelectSingle;
                 return _cacheSelectionManager;
             }
         }
@@ -73,19 +73,6 @@ namespace MultiplayerARPG.Auction
         public AuctionRestClient RestClient
         {
             get { return BaseGameNetworkManager.Singleton.AuctionRestClientForClient; }
-        }
-
-        protected override void OnDestroy()
-        {
-            base.OnDestroy();
-            listEmptyObject = null;
-            uiDialog = null;
-            uiPrefab = null;
-            uiContainer = null;
-            inputBidPrice = null;
-            textPage = null;
-            _cacheList = null;
-            _cacheSelectionManager = null;
         }
 
         private void OnEnable()
@@ -119,7 +106,7 @@ namespace MultiplayerARPG.Auction
             if (uiDialog != null)
             {
                 uiDialog.selectionManager = CacheSelectionManager;
-                ui.CloneTo(uiDialog);
+                uiDialog.Data = ui.Data;
                 uiDialog.Show();
             }
         }
@@ -132,6 +119,19 @@ namespace MultiplayerARPG.Auction
                 uiDialog.Hide();
                 uiDialog.onHide.AddListener(OnDialogHide);
             }
+        }
+
+        public async void GetClientConfig()
+        {
+            AsyncResponseData<ResponseClientConfigMessage> result = await BaseGameNetworkManager.Singleton.GetAuctionClientConfig();
+            if (result.ResponseCode != AckResponseCode.Success)
+            {
+                // Cannot get access token
+                await UniTask.Delay(reconnectDelayInMilliseconds);
+                GetClientConfig();
+                return;
+            }
+            Refresh();
         }
 
         public void Refresh()
@@ -153,6 +153,12 @@ namespace MultiplayerARPG.Auction
 
         private async void GoToPageRoutine(int page)
         {
+            if (string.IsNullOrEmpty(RestClient.apiUrl) ||
+                string.IsNullOrEmpty(RestClient.secretKey))
+            {
+                GetClientConfig();
+                return;
+            }
             RestClient.Result<AuctionListResponse> result;
             switch (listMode)
             {
@@ -172,8 +178,13 @@ namespace MultiplayerARPG.Auction
             CacheList.HideAll();
             if (listEmptyObject != null)
                 listEmptyObject.SetActive(true);
-            if (result.IsNetworkError || result.IsHttpError)
+            if (result.IsNetworkError)
                 return;
+            if (result.IsHttpError)
+            {
+                GetClientConfig();
+                return;
+            }
             if (result.Content.list.Count == 0)
                 return;
             UIAuction tempUi;
@@ -184,7 +195,7 @@ namespace MultiplayerARPG.Auction
                 tempUi.Show();
                 CacheSelectionManager.Add(tempUi);
                 if (selectedId == data.id)
-                    tempUi.SelectByManager();
+                    tempUi.OnClickSelect();
             });
             if (listEmptyObject != null)
                 listEmptyObject.SetActive(result.Content.list.Count == 0);
